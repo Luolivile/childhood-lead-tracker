@@ -1,0 +1,31 @@
+# R files
+.Rhistory
+.Rdata
+.RData
+.Ruserdata
+.Rproj.user/
+
+# renv
+renv/library/
+renv/local/
+renv/staging/
+renv/python/
+
+# Raw data (too large for git)
+data/raw/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+*.Rproj
+
+# Temporary files
+*.tmp
+*~
+
+# Credentials (if any)
+.env
+*.credentials
