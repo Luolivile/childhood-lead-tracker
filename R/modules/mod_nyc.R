@@ -35,8 +35,8 @@ tagList(
         selectInput(
           ns("geography_level"),
           "Geography Level",
-          choices = c("Citywide", "Borough", "NTA", "UHF", "CD"),
-          selected = "Borough"
+          choices = NULL,
+          selected = NULL
         )
       ),
       column(
@@ -171,6 +171,11 @@ mod_nyc_server <- function(id, data, geo) {
         return(NULL)
       }
 
+      # Filter by threshold
+      if (!is.null(input$threshold) && "reference_threshold" %in% names(df)) {
+        df <- df %>% filter(reference_threshold == as.numeric(input$threshold))
+      }
+
       # Filter by year if selected
       if (!is.null(input$year) && input$year != "All") {
         df <- df %>% filter(year == as.numeric(input$year))
@@ -190,12 +195,31 @@ mod_nyc_server <- function(id, data, geo) {
     })
 
     # -------------------------------------------------------------------------
-    # Update year choices when data changes
+    # Update threshold choices based on available data
     # -------------------------------------------------------------------------
     observe({
       req(data())
 
-      years <- data() %>%
+      if ("reference_threshold" %in% names(data())) {
+        thresholds <- sort(unique(data()$reference_threshold))
+        choices <- setNames(thresholds, paste0("\u2265", thresholds, " \u03bcg/dL"))
+        updateSelectInput(session, "threshold", choices = choices, selected = 5)
+      }
+    })
+
+    # -------------------------------------------------------------------------
+    # Update year choices when data or threshold changes
+    # -------------------------------------------------------------------------
+    observe({
+      req(data())
+
+      df <- data()
+      # Filter by threshold first to show only relevant years
+      if (!is.null(input$threshold) && "reference_threshold" %in% names(df)) {
+        df <- df %>% filter(reference_threshold == as.numeric(input$threshold))
+      }
+
+      years <- df %>%
         filter(!is.na(year)) %>%
         pull(year) %>%
         unique() %>%
@@ -206,6 +230,26 @@ mod_nyc_server <- function(id, data, geo) {
           session, "year",
           choices = c("All", years),
           selected = years[1]
+        )
+      }
+    })
+
+    # -------------------------------------------------------------------------
+    # Update geography level choices based on available data
+    # -------------------------------------------------------------------------
+    observe({
+      req(data())
+
+      geo_types <- data() %>%
+        filter(!is.na(geography_type)) %>%
+        pull(geography_type) %>%
+        unique()
+
+      if (length(geo_types) > 0) {
+        updateSelectInput(
+          session, "geography_level",
+          choices = geo_types,
+          selected = geo_types[1]
         )
       }
     })
@@ -252,47 +296,123 @@ mod_nyc_server <- function(id, data, geo) {
       df <- filtered_data()
       geo_data <- geo()
 
-      # Get appropriate boundaries based on geography level
-      boundaries <- NULL
-      if (!is.null(geo_data)) {
-        if (input$geography_level == "Borough" && !is.null(geo_data$nyc_borough)) {
-          boundaries <- geo_data$nyc_borough
-        } else if (input$geography_level == "NTA" && !is.null(geo_data$nyc_nta)) {
-          boundaries <- geo_data$nyc_nta
-        }
-      }
-
       leafletProxy(ns("nyc_map")) %>%
         clearShapes() %>%
         clearControls()
 
-      if (!is.null(boundaries) && !is.null(df) && nrow(df) > 0) {
-        # Try to join data with boundaries
-        # This requires matching geography names
-        if ("elevated_rate" %in% names(df)) {
-          # Create color palette
-          pal <- colorNumeric(
-            palette = "YlOrRd",
-            domain = c(0, max(df$elevated_rate, na.rm = TRUE)),
-            na.color = "#CCCCCC"
-          )
+      # If we have data, create markers for each geography
+      if (!is.null(df) && nrow(df) > 0 && "elevated_rate" %in% names(df)) {
+        # Create color palette based on data
+        # Use a fixed domain to ensure consistent colors and legend
+        max_rate <- max(df$elevated_rate, na.rm = TRUE)
+        # Ensure we have a reasonable range for the palette (at least 0-5%)
+        domain_max <- max(5, ceiling(max_rate))
 
-          # Simple choropleth if boundaries don't have data
+        pal <- colorNumeric(
+          palette = "YlOrRd",
+          domain = c(0, domain_max),
+          na.color = "#CCCCCC"
+        )
+
+        # Centroid coordinates for marker placement
+        geo_coords <- data.frame(
+          geography_name = c(
+            "Bronx", "Brooklyn", "Manhattan", "Queens", "Staten Island",
+            "New York City",
+            "Kingsbridge-Riverdale","NE Bronx","Fordham-Bronx Park",
+            "Pelham-Throgs Neck","Crotona-Tremont","High Bridge-Morrisania",
+            "Hunts Point-Mott Haven",
+            "Greenpoint","Downtown-Heights-Park Slope","Bed-Stuy-Crown Heights",
+            "East New York","Sunset Park","Borough Park","E Flatbush-Flatbush",
+            "Canarsie-Flatlands","Bensonhurst-Bay Ridge","Coney Island-Sheepshead Bay",
+            "Williamsburg-Bushwick",
+            "Washington Heights","Central Harlem-Morningside Hts","East Harlem",
+            "Upper West Side","Upper East Side","Chelsea-Clinton",
+            "Gramercy Park-Murray Hill","Greenwich Village-SoHo",
+            "Union Square-Lower East Side","Lower Manhattan",
+            "Long Island City-Astoria","West Queens","Flushing-Clearview",
+            "Bayside-Meadowlands","Ridgewood-Forest Hills","Fresh Meadows",
+            "SW Queens","Jamaica","SE Queens","Rockaway",
+            "Port Richmond","Stapleton-St. George","Willowbrook",
+            "South Beach-Tottenville"
+          ),
+          lat = c(
+            40.8448, 40.6782, 40.7831, 40.7282, 40.5795,
+            40.7128,
+            40.8960, 40.8690, 40.8615, 40.8230, 40.8400, 40.8310, 40.8100,
+            40.7270, 40.6810, 40.6710, 40.6610, 40.6480, 40.6340, 40.6500,
+            40.6350, 40.6100, 40.5780, 40.7080,
+            40.8440, 40.8110, 40.7950, 40.7870, 40.7740, 40.7500,
+            40.7440, 40.7280, 40.7190, 40.7080,
+            40.7600, 40.7440, 40.7640, 40.7600, 40.7120, 40.7350,
+            40.6750, 40.6910, 40.6600, 40.5830,
+            40.6350, 40.6280, 40.5980, 40.5560
+          ),
+          lng = c(
+            -73.8648, -73.9442, -73.9712, -73.7949, -74.1502,
+            -74.0060,
+            -73.9040, -73.8470, -73.8890, -73.8210, -73.8970, -73.9130, -73.8870,
+            -73.9510, -73.9870, -73.9410, -73.8780, -74.0130, -73.9920, -73.9570,
+            -73.9010, -74.0150, -73.9610, -73.9360,
+            -73.9380, -73.9520, -73.9430, -73.9720, -73.9570, -73.9980,
+            -73.9810, -74.0020, -73.9870, -74.0150,
+            -73.9180, -73.8760, -73.8140, -73.7680, -73.8500, -73.7850,
+            -73.8100, -73.7870, -73.7530, -73.8250,
+            -74.1380, -74.0780, -74.1640, -74.1280
+          ),
+          stringsAsFactors = FALSE
+        )
+
+        # Join coordinates to data
+        map_data <- df %>%
+          left_join(geo_coords, by = "geography_name")
+
+        # Drop rows without coordinates
+        map_data <- map_data %>% filter(!is.na(lat) & !is.na(lng))
+
+        if (nrow(map_data) > 0) {
           leafletProxy(ns("nyc_map")) %>%
-            addPolygons(
-              data = boundaries,
-              fillColor = "#3388ff",
-              fillOpacity = 0.3,
-              weight = 1,
+            addCircleMarkers(
+              data = map_data,
+              lng = ~lng,
+              lat = ~lat,
+              radius = ~sqrt(elevated_rate) * 8,
+              fillColor = ~pal(elevated_rate),
+              fillOpacity = 0.7,
+              weight = 2,
               color = "#333",
-              opacity = 0.8,
-              highlightOptions = highlightOptions(
-                weight = 2,
-                color = "#666",
-                fillOpacity = 0.5
+              opacity = 0.9,
+              popup = ~paste0(
+                "<strong>", geography_name, "</strong><br/>",
+                "Elevated BLL Rate: ", round(elevated_rate, 1), "%<br/>",
+                "Elevated Cases: ", format(elevated_count, big.mark = ","), "<br/>",
+                "Children Tested: ", format(children_tested, big.mark = ","), "<br/>",
+                "Year: ", year, "<br/>",
+                "Threshold: ", threshold_note
               )
+            ) %>%
+            addLegend(
+              position = "bottomright",
+              pal = pal,
+              values = c(0, domain_max),
+              title = "Elevated BLL<br/>Rate (%)",
+              opacity = 0.7,
+              labFormat = labelFormat(suffix = "%")
             )
         }
+      }
+
+      # Also add NTA boundaries if available (as background context)
+      if (!is.null(geo_data) && !is.null(geo_data$nyc_nta)) {
+        leafletProxy(ns("nyc_map")) %>%
+          addPolygons(
+            data = geo_data$nyc_nta,
+            fillColor = "transparent",
+            fillOpacity = 0,
+            weight = 0.5,
+            color = "#999",
+            opacity = 0.5
+          )
       }
     })
 
@@ -311,6 +431,11 @@ mod_nyc_server <- function(id, data, geo) {
               yaxis = list(visible = FALSE)
             )
         )
+      }
+
+      # Filter by selected threshold for consistent time series
+      if (!is.null(input$threshold) && "reference_threshold" %in% names(df)) {
+        df <- df %>% filter(reference_threshold == as.numeric(input$threshold))
       }
 
       # Aggregate by year and geography type

@@ -18,9 +18,23 @@ NEW_REFERENCE_VALUE <- 3.5
 clean_nyc_data <- function(nyc_data) {
   if (is.null(nyc_data)) return(NULL)
 
+  # If data already has standard columns (from EHDP JSON fetch), pass through
+  if (!is.null(nyc_data$elevated_bll) &&
+      all(c("geography_name", "geography_type", "year", "elevated_rate") %in%
+          names(nyc_data$elevated_bll))) {
+    df <- nyc_data$elevated_bll %>%
+      mutate(
+        year = as.numeric(year),
+        elevated_rate = as.numeric(elevated_rate),
+        children_tested = as.numeric(children_tested),
+        elevated_count = as.numeric(elevated_count)
+      )
+    return(df)
+  }
+
+  # Legacy path for old CSV-format data
   cleaned_list <- list()
 
-  # Process elevated BLL data
   if (!is.null(nyc_data$elevated_bll)) {
     cleaned_list$elevated_bll <- nyc_data$elevated_bll %>%
       clean_column_names() %>%
@@ -32,7 +46,6 @@ clean_nyc_data <- function(nyc_data) {
       )
   }
 
-  # Process children tested data
   if (!is.null(nyc_data$tested)) {
     cleaned_list$tested <- nyc_data$tested %>%
       clean_column_names() %>%
@@ -43,7 +56,6 @@ clean_nyc_data <- function(nyc_data) {
       )
   }
 
-  # Combine into unified format
   combine_nyc_datasets(cleaned_list)
 }
 
@@ -63,19 +75,24 @@ clean_column_names <- function(df) {
 #' @param df Data frame with geography column
 #' @return Data frame with standardized geography names
 standardize_geography_names <- function(df) {
+  # If already has standard column names, return as-is
+  if ("geography_name" %in% names(df) && "geography_type" %in% names(df)) {
+    return(df)
+  }
+
   # Common geography column names to look for
   geo_cols <- c("geoname", "geography", "geo_name", "geo", "location",
                 "neighborhood", "borough", "nta", "uhf", "cd")
 
   existing_geo_col <- intersect(names(df), geo_cols)[1]
 
-  if (!is.na(existing_geo_col)) {
+  if (!is.na(existing_geo_col) && !"geography_name" %in% names(df)) {
     df <- df %>%
       rename(geography_name = !!sym(existing_geo_col))
   }
 
   # Look for geography type column
-  geo_type_cols <- c("geotype", "geo_type", "geography_type", "geoentitytype")
+  geo_type_cols <- c("geotype", "geo_type", "geoentitytype")
   existing_type_col <- intersect(names(df), geo_type_cols)[1]
 
   if (!is.na(existing_type_col)) {
@@ -100,27 +117,33 @@ standardize_geography_names <- function(df) {
 #' @param df Data frame with year column
 #' @return Data frame with threshold information
 add_reference_threshold <- function(df) {
-  # Look for year column
-  year_cols <- c("year", "time", "year_number", "yearnum")
-  existing_year_col <- intersect(names(df), year_cols)[1]
-
-  if (is.na(existing_year_col)) {
-    # Try to extract year from time/period column
-    time_cols <- c("time", "period", "timeperiod", "time_period")
-    time_col <- intersect(names(df), time_cols)[1]
-
-    if (!is.na(time_col)) {
-      df <- df %>%
-        mutate(year = as.numeric(str_extract(!!sym(time_col), "\\d{4}")))
-    } else {
-      df$year <- NA_integer_
-    }
+  # If year column already exists, just ensure it's numeric
+  if ("year" %in% names(df)) {
+    df <- df %>% mutate(year = as.numeric(year))
   } else {
-    df <- df %>%
-      rename(year = !!sym(existing_year_col)) %>%
-      mutate(year = as.numeric(year))
+    # Look for year column with different names
+    year_cols <- c("time", "year_number", "yearnum")
+    existing_year_col <- intersect(names(df), year_cols)[1]
+
+    if (!is.na(existing_year_col)) {
+      df <- df %>%
+        rename(year = !!sym(existing_year_col)) %>%
+        mutate(year = as.numeric(year))
+    } else {
+      # Try to extract year from time/period column
+      time_cols <- c("time", "period", "timeperiod", "time_period")
+      time_col <- intersect(names(df), time_cols)[1]
+
+      if (!is.na(time_col)) {
+        df <- df %>%
+          mutate(year = as.numeric(str_extract(!!sym(time_col), "\\d{4}")))
+      } else {
+        df$year <- NA_integer_
+      }
+    }
   }
 
+  # Add/update reference threshold columns
   df %>%
     mutate(
       reference_threshold = ifelse(year >= 2022, NEW_REFERENCE_VALUE, OLD_REFERENCE_VALUE),
@@ -164,31 +187,92 @@ combine_nyc_datasets <- function(cleaned_list) {
   NULL
 }
 
+#' Clean and standardize NYS Open Data lead data
+#' @param nys_data Data frame from fetch_nys_lead_data()
+#' @return Cleaned and standardized data frame
+clean_nys_data <- function(nys_data) {
+  if (is.null(nys_data)) return(NULL)
+
+  nys_data %>%
+    mutate(
+      data_source = "NYS Open Data",
+      county = as.character(county),
+      year = as.integer(year),
+      children_tested = as.numeric(tests),
+      elevated_count = as.numeric(total_eblls),
+      elevated_rate = as.numeric(percent),
+      rate_per_1000 = as.numeric(rate_per_1_000),
+      # NYS data uses 5 mcg/dL threshold (data goes to 2021)
+      threshold_used = 5.0,
+      threshold_note = "≥5 μg/dL"
+    ) %>%
+    filter(!is.na(county) & !is.na(year)) %>%
+    select(county, year, children_tested, elevated_count, elevated_rate,
+           rate_per_1000, threshold_used, threshold_note, data_source)
+}
+
+#' Aggregate NYS data to statewide totals by year
+#' @param nys_clean Cleaned NYS data from clean_nys_data()
+#' @return Data frame with one row per year for NY State
+aggregate_nys_statewide <- function(nys_clean) {
+  if (is.null(nys_clean)) return(NULL)
+
+  nys_clean %>%
+    group_by(year, threshold_used, threshold_note, data_source) %>%
+    summarise(
+      children_tested = sum(children_tested, na.rm = TRUE),
+      elevated_count = sum(elevated_count, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      elevated_rate = (elevated_count / children_tested) * 100,
+      state = "New York"
+    )
+}
+
 #' Clean and standardize CDC state data
 #' @param state_data Data frame from fetch_cdc_state_data()
 #' @return Cleaned and standardized data frame
 clean_cdc_state_data <- function(state_data) {
   if (is.null(state_data)) return(NULL)
 
-  state_data %>%
-    clean_column_names() %>%
-    mutate(
-      data_source = "CDC State Surveillance",
-      # Ensure consistent state naming
-      state = str_to_title(str_trim(state)),
-      # Add state abbreviations
-      state_abbr = state.abb[match(state, state.name)],
-      state_abbr = ifelse(is.na(state_abbr), state, state_abbr),
-      # Ensure numeric types
-      year = as.integer(year),
-      children_tested = as.numeric(children_tested),
-      elevated_count = as.numeric(elevated_count),
-      elevated_rate = as.numeric(elevated_rate),
-      threshold_used = as.numeric(threshold_used),
-      # Add threshold note
-      threshold_note = paste0("≥", threshold_used, " μg/dL")
-    ) %>%
-    filter(!is.na(state) & !is.na(year))
+  # Handle real CDC Excel format (has num_ge_5, pct_ge_5, etc.)
+  if ("num_ge_5" %in% names(state_data)) {
+    state_data %>%
+      mutate(
+        data_source = "CDC CBLS",
+        state = str_to_title(str_trim(state)),
+        # Fix "District Of Columbia" -> "District of Columbia" to match GeoJSON
+        state = gsub(" Of ", " of ", state),
+        state_abbr = state.abb[match(state, state.name)],
+        state_abbr = ifelse(is.na(state_abbr), state, state_abbr),
+        year = as.integer(year),
+        children_tested = as.numeric(children_tested),
+        elevated_count = as.numeric(num_ge_5),
+        elevated_rate = as.numeric(pct_ge_5),
+        threshold_used = 5,
+        threshold_note = "\u22655 \u03bcg/dL"
+      ) %>%
+      filter(!is.na(state) & !is.na(year) &
+               !grepl("U\\.S\\.|Total|New York City|Puerto Rico", state))
+  } else {
+    # Fallback for sample data format
+    state_data %>%
+      clean_column_names() %>%
+      mutate(
+        data_source = "CDC State Surveillance",
+        state = str_to_title(str_trim(state)),
+        state_abbr = state.abb[match(state, state.name)],
+        state_abbr = ifelse(is.na(state_abbr), state, state_abbr),
+        year = as.integer(year),
+        children_tested = as.numeric(children_tested),
+        elevated_count = as.numeric(elevated_count),
+        elevated_rate = as.numeric(elevated_rate),
+        threshold_used = as.numeric(threshold_used),
+        threshold_note = paste0("\u2265", threshold_used, " \u03bcg/dL")
+      ) %>%
+      filter(!is.na(state) & !is.na(year))
+  }
 }
 
 #' Clean and standardize CDC national data
@@ -197,38 +281,79 @@ clean_cdc_state_data <- function(state_data) {
 clean_cdc_national_data <- function(national_data) {
   if (is.null(national_data)) return(NULL)
 
-  national_data %>%
-    clean_column_names() %>%
-    mutate(
-      data_source = "CDC National Surveillance",
-      geography_name = "United States",
-      geography_type = "National",
-      # Ensure numeric types
-      year = as.integer(year),
-      children_tested = as.numeric(children_tested),
-      elevated_count = as.numeric(elevated_count),
-      elevated_rate = as.numeric(elevated_rate),
-      threshold_used = as.numeric(threshold_used),
-      threshold_note = paste0("≥", threshold_used, " μg/dL")
-    ) %>%
-    filter(!is.na(year))
+  # Handle real CDC Excel format
+  if ("num_ge_5" %in% names(national_data)) {
+    result <- national_data %>%
+      mutate(
+        data_source = "CDC CBLS",
+        geography_name = "United States",
+        geography_type = "National",
+        year = as.integer(year),
+        children_tested = as.numeric(children_tested),
+        elevated_count = as.numeric(num_ge_5),
+        elevated_rate = as.numeric(pct_ge_5),
+        threshold_used = 5,
+        threshold_note = "\u22655 \u03bcg/dL"
+      ) %>%
+      filter(!is.na(year))
+
+    # Excel stores national pct as decimal fractions (e.g. 0.015 = 1.5%)
+    # while state rows have text "1.5%". Detect and fix.
+    if (max(result$elevated_rate, na.rm = TRUE) < 1) {
+      result$elevated_rate <- result$elevated_rate * 100
+    }
+
+    result
+  } else {
+    # Fallback for sample data format
+    national_data %>%
+      clean_column_names() %>%
+      mutate(
+        data_source = "CDC National Surveillance",
+        geography_name = "United States",
+        geography_type = "National",
+        year = as.integer(year),
+        children_tested = as.numeric(children_tested),
+        elevated_count = as.numeric(elevated_count),
+        elevated_rate = as.numeric(elevated_rate),
+        threshold_used = as.numeric(threshold_used),
+        threshold_note = paste0("\u2265", threshold_used, " \u03bcg/dL")
+      ) %>%
+      filter(!is.na(year))
+  }
 }
 
-#' Create comparison dataset combining NYC and national data
+#' Create comparison dataset combining NYC, NYS, and national data
 #' @param nyc_data Cleaned NYC data
+#' @param nys_statewide Aggregated NYS statewide data (from aggregate_nys_statewide)
 #' @param cdc_state_data Cleaned CDC state data
 #' @param cdc_national_data Cleaned CDC national data
 #' @return Combined data frame for comparison
-create_comparison_data <- function(nyc_data, cdc_state_data, cdc_national_data) {
+create_comparison_data <- function(nyc_data, nys_statewide = NULL, cdc_state_data = NULL, cdc_national_data = NULL) {
   comparison_list <- list()
 
   # NYC citywide data
-  if (!is.null(nyc_data)) {
+  if (!is.null(nyc_data) && nrow(nyc_data) > 0) {
+    # Check if geography columns exist, add defaults if not
+    if (!"geography_type" %in% names(nyc_data)) {
+      nyc_data$geography_type <- "Unknown"
+    }
+    if (!"geography_name" %in% names(nyc_data)) {
+      nyc_data$geography_name <- "Unknown"
+    }
+
     nyc_citywide <- nyc_data %>%
       filter(
         str_detect(tolower(geography_type), "city") |
           str_detect(tolower(geography_name), "new york city|nyc|citywide")
-      ) %>%
+      )
+
+    # Use >=5 threshold for comparison (consistent across full time series)
+    if ("reference_threshold" %in% names(nyc_citywide)) {
+      nyc_citywide <- nyc_citywide %>% filter(reference_threshold == 5)
+    }
+
+    nyc_citywide <- nyc_citywide %>%
       mutate(
         region = "NYC",
         geography_type = "City"
@@ -242,8 +367,23 @@ create_comparison_data <- function(nyc_data, cdc_state_data, cdc_national_data) 
     }
   }
 
-  # NY State data from CDC
-  if (!is.null(cdc_state_data)) {
+  # NY State data — prefer real NYS Open Data over CDC
+  if (!is.null(nys_statewide) && nrow(nys_statewide) > 0) {
+    ny_state <- nys_statewide %>%
+      mutate(
+        region = "NY State",
+        geography_type = "State",
+        reference_threshold = threshold_used
+      ) %>%
+      select(any_of(c("year", "region", "geography_type", "elevated_rate",
+                      "elevated_count", "reference_threshold", "threshold_note",
+                      "data_source")))
+
+    if (nrow(ny_state) > 0) {
+      comparison_list$ny_state <- ny_state
+    }
+  } else if (!is.null(cdc_state_data)) {
+    # Fallback to CDC state data for NY
     ny_state <- cdc_state_data %>%
       filter(state == "New York") %>%
       mutate(
@@ -323,13 +463,17 @@ clean_all_data <- function(raw_data) {
   message("Cleaning all data sources...")
 
   nyc_clean <- clean_nyc_data(raw_data$nyc)
+  nys_clean <- clean_nys_data(raw_data$nys)
+  nys_statewide <- aggregate_nys_statewide(nys_clean)
   cdc_state_clean <- clean_cdc_state_data(raw_data$cdc_state)
   cdc_national_clean <- clean_cdc_national_data(raw_data$cdc_national)
 
-  comparison <- create_comparison_data(nyc_clean, cdc_state_clean, cdc_national_clean)
+  comparison <- create_comparison_data(nyc_clean, nys_statewide, cdc_state_clean, cdc_national_clean)
 
   list(
     nyc = nyc_clean,
+    nys = nys_clean,
+    nys_statewide = nys_statewide,
     cdc_state = cdc_state_clean,
     cdc_national = cdc_national_clean,
     comparison = comparison,
@@ -350,6 +494,14 @@ save_processed_data <- function(cleaned_data, output_dir = NULL) {
   # Save each dataset
   if (!is.null(cleaned_data$nyc)) {
     saveRDS(cleaned_data$nyc, file.path(output_dir, "nyc_lead_data.rds"))
+  }
+
+  if (!is.null(cleaned_data$nys)) {
+    saveRDS(cleaned_data$nys, file.path(output_dir, "nys_lead_data.rds"))
+  }
+
+  if (!is.null(cleaned_data$nys_statewide)) {
+    saveRDS(cleaned_data$nys_statewide, file.path(output_dir, "nys_statewide_data.rds"))
   }
 
   if (!is.null(cleaned_data$cdc_state)) {
@@ -377,6 +529,8 @@ load_processed_data <- function(input_dir = NULL) {
 
   list(
     nyc = tryCatch(readRDS(file.path(input_dir, "nyc_lead_data.rds")), error = function(e) NULL),
+    nys = tryCatch(readRDS(file.path(input_dir, "nys_lead_data.rds")), error = function(e) NULL),
+    nys_statewide = tryCatch(readRDS(file.path(input_dir, "nys_statewide_data.rds")), error = function(e) NULL),
     cdc_state = tryCatch(readRDS(file.path(input_dir, "cdc_state_data.rds")), error = function(e) NULL),
     cdc_national = tryCatch(readRDS(file.path(input_dir, "cdc_national_data.rds")), error = function(e) NULL),
     comparison = tryCatch(readRDS(file.path(input_dir, "comparison_data.rds")), error = function(e) NULL)

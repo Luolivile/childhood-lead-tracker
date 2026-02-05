@@ -331,6 +331,7 @@ mod_national_server <- function(id, state_data, national_data, geo) {
 
       # Get the metric to display
       metric_col <- input$sort_by
+      if (is.null(metric_col)) metric_col <- "elevated_rate"
 
       # Aggregate data by state for the selected year
       state_summary <- df %>%
@@ -342,60 +343,53 @@ mod_national_server <- function(id, state_data, national_data, geo) {
           .groups = "drop"
         )
 
-      # Try to join with boundaries
-      # Common column names in GeoJSON: name, NAME, State
-      name_col <- intersect(names(boundaries), c("name", "NAME", "State", "state"))[1]
+      # Join with boundaries using the "name" column
+      boundaries <- boundaries %>%
+        left_join(state_summary, by = c("name" = "state"))
 
-      if (!is.na(name_col)) {
-        boundaries <- boundaries %>%
-          left_join(state_summary, by = setNames("state", name_col))
+      # Get metric values for coloring
+      metric_values <- boundaries[[metric_col]]
 
-        # Create color palette
-        metric_values <- boundaries[[metric_col]]
-        if (all(is.na(metric_values))) {
-          pal <- colorNumeric("YlOrRd", domain = c(0, 10), na.color = "#CCCCCC")
-        } else {
-          pal <- colorNumeric(
-            "YlOrRd",
-            domain = range(metric_values, na.rm = TRUE),
-            na.color = "#CCCCCC"
+      # Create color palette with fixed domain
+      max_val <- max(metric_values, na.rm = TRUE)
+      if (is.na(max_val) || is.infinite(max_val)) max_val <- 10
+      domain_max <- max(5, ceiling(max_val))
+
+      pal <- colorNumeric(
+        "YlOrRd",
+        domain = c(0, domain_max),
+        na.color = "#CCCCCC"
+      )
+
+      # Add polygons
+      leafletProxy(ns("us_map")) %>%
+        addPolygons(
+          data = boundaries,
+          fillColor = ~pal(elevated_rate),
+          fillOpacity = 0.7,
+          weight = 1,
+          color = "#333",
+          opacity = 0.8,
+          highlightOptions = highlightOptions(
+            weight = 2,
+            color = "#000",
+            fillOpacity = 0.9
+          ),
+          popup = ~paste0(
+            "<strong>", name, "</strong><br/>",
+            "Elevated Rate: ", round(elevated_rate, 1), "%<br/>",
+            "Children Tested: ", format(children_tested, big.mark = ","), "<br/>",
+            "Elevated Cases: ", format(elevated_count, big.mark = ",")
           )
-        }
-
-        # Add polygons
-        leafletProxy(ns("us_map")) %>%
-          addPolygons(
-            data = boundaries,
-            fillColor = ~pal(get(metric_col)),
-            fillOpacity = 0.7,
-            weight = 1,
-            color = "#333",
-            opacity = 0.8,
-            highlightOptions = highlightOptions(
-              weight = 2,
-              color = "#000",
-              fillOpacity = 0.9
-            ),
-            popup = ~paste0(
-              "<strong>", get(name_col), "</strong><br/>",
-              "Elevated Rate: ", round(elevated_rate, 1), "%<br/>",
-              "Children Tested: ", format(children_tested, big.mark = ","), "<br/>",
-              "Elevated Cases: ", format(elevated_count, big.mark = ",")
-            )
-          ) %>%
-          addLegend(
-            position = "bottomright",
-            pal = pal,
-            values = metric_values,
-            title = switch(
-              metric_col,
-              "elevated_rate" = "Rate (%)",
-              "children_tested" = "Tested",
-              "elevated_count" = "Cases"
-            ),
-            na.label = "No data"
-          )
-      }
+        ) %>%
+        addLegend(
+          position = "bottomright",
+          pal = pal,
+          values = c(0, domain_max),
+          title = "Rate (%)",
+          na.label = "No data",
+          labFormat = labelFormat(suffix = "%")
+        )
     })
 
     # -------------------------------------------------------------------------

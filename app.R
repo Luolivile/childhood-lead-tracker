@@ -18,6 +18,7 @@ library(plotly)
 library(leaflet)
 library(sf)
 library(DT)
+library(jsonlite)
 library(here)
 
 # =============================================================================
@@ -137,45 +138,40 @@ ui <- dashboardPage(
                     tags$tr(
                       tags$th("Source"),
                       tags$th("Coverage"),
+                      tags$th("Years"),
                       tags$th("Geography")
                     )
                   ),
                   tags$tbody(
                     tags$tr(
                       tags$td(tags$a(
-                        href = "https://a816-dohbesp.nyc.gov/IndicatorPublic/data-explorer/lead/",
-                        target = "_blank",
-                        "NYC Environment & Health Data Portal"
-                      )),
-                      tags$td("NYC"),
-                      tags$td("Borough, UHF, CD, NTA")
-                    ),
-                    tags$tr(
-                      tags$td(tags$a(
                         href = "https://github.com/nychealth/EHDP-data",
                         target = "_blank",
-                        "nychealth/EHDP-data GitHub"
+                        "NYC EHDP (GitHub)"
                       )),
                       tags$td("NYC"),
-                      tags$td("Borough, UHF, CD, NTA")
+                      tags$td("2005-2024"),
+                      tags$td("Borough, UHF42, Citywide")
                     ),
                     tags$tr(
                       tags$td(tags$a(
-                        href = "https://www.cdc.gov/lead-prevention/php/data/state-surveillance-data.html",
+                        href = "https://health.data.ny.gov/Health/Childhood-Blood-Lead-Testing-and-Elevated-Incidenc/dyed-4zxh",
                         target = "_blank",
-                        "CDC State Surveillance"
+                        "NYS Open Data"
                       )),
-                      tags$td("United States"),
-                      tags$td("State, County")
+                      tags$td("NY State (excl. NYC)"),
+                      tags$td("2000-2021"),
+                      tags$td("County")
                     ),
                     tags$tr(
                       tags$td(tags$a(
                         href = "https://www.cdc.gov/lead-prevention/php/data/national-surveillance-data.html",
                         target = "_blank",
-                        "CDC National Surveillance"
+                        "CDC CBLS"
                       )),
                       tags$td("United States"),
-                      tags$td("National")
+                      tags$td("2017-2022"),
+                      tags$td("State, National")
                     )
                   )
                 ),
@@ -219,7 +215,7 @@ ui <- dashboardPage(
                 p(
                   "For questions about this dashboard or to report issues, please ",
                   tags$a(
-                    href = "https://github.com/YOUR_USERNAME/childhood-lead-tracker/issues",
+                    href = "https://github.com/Luolivile/childhood-lead-tracker/issues",
                     target = "_blank",
                     "open an issue on GitHub"
                   ), "."
