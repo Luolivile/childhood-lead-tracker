@@ -2,6 +2,8 @@
 
 An interactive R Shiny dashboard for childhood blood lead level (BLL) surveillance, comparing NYC, NY State, and national (CDC) data.
 
+**[View Live Dashboard](https://luolivile.shinyapps.io/childhood-lead-tracker/)**
+
 ## Overview
 
 This dashboard provides visualization and analysis of childhood lead exposure data from multiple sources:
